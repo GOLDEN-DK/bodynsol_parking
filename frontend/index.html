@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>주차 자동화 시스템</title>
+    <meta charset="UTF-8" />
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        padding: 20px;
+      }
+      .input-group {
+        margin-bottom: 15px;
+      }
+      label {
+        display: block;
+        margin-bottom: 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>주차 자동화 시스템</h1>
+    <div class="input-group">
+      <label for="carNumber">차량번호 (4자리):</label>
+      <input type="text" id="carNumber" maxlength="4" />
+    </div>
+    <div class="input-group">
+      <label>주차시간:</label>
+      <select id="parkingTime">
+        <option value="30">30분</option>
+        <option value="60">1시간</option>
+        <option value="90">1시간 30분</option>
+      </select>
+    </div>
+    <button id="searchBtn">조회</button>
+    <div id="result"></div>
+    <script src="renderer.js"></script>
+  </body>
+</html>

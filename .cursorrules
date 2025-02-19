@@ -1,0 +1,285 @@
+아래는 Python-Selenium-SQLite 조합을 중심으로, Electron 데스크톱 애플리케이션과 연동하는 형태를 가정한 더욱 구체적인 개발 가이드와 아키텍처-구현 절차다.
+
+---
+
+## 1. 전체 아키텍처 개요
+
+### 1.1 구성 요소
+- **Electron 데스크톱 애플리케이션** (프론트엔드)
+	- 사용자 인터페이스(UI)
+		- 차량번호 4자리 및 주차시간(30분 단위, 최대 1시간 30분) 입력
+		- 차량 조회 결과(사진) 확인 및 ‘확인’, ‘다음’ 버튼 제공
+	- Node.js 기반의 메인 프로세스 + 렌더러(HTML/CSS/JS)
+
+- **Python 백엔드** (자동화 및 로직)
+	- Flask나 FastAPI 같은 간단한 웹 서버를 내부적으로 구동해 Electron과 통신 (HTTP 혹은 IPC 방식)
+	- Selenium 드라이버를 실행해 특정 사이트 로그인-차량 조회-사진 가져오기-주차시간 적용 등의 업무 수행
+	- SQLite DB를 통해 요청 상태, 로그, 회원정보, 세션 등을 관리
+
+- **SQLite 데이터베이스**
+	- requests 테이블: 회원 입력값, 처리 상태, 시간 정보, 결과 기록
+	- session 테이블 또는 파일: 특정 사이트 로그인 세션(쿠키 등) 유지(선택적)
+
+### 1.2 동작 흐름(요약)
+1. 회원이 Electron 앱을 실행한다.
+2. 차량번호 4자리와 주차시간(30분 단위) 입력 후 ‘확인’을 누르면, Electron이 Python 서버로 요청(REST or IPC).
+3. Python은 (로그인 세션 없으면) 로그인 후 차량 조회 -> 사진 URL을 획득한다.
+4. Electron에 사진 URL을 반환 -> Electron에서 사진을 표시한다.
+5. 사용자는 사진을 보고 ‘확인’ 혹은 ‘다음’ 선택.
+6. ‘확인’ 클릭 시 -> Python에서 해당 차량에 주차시간 버튼(30분 또는 1시간)을 자동 클릭 -> 주차 시간 등록.
+7. SQLite에 해당 요청의 처리 내용을 로그로 기록한다.
+8. 처리 완료 후 결과(성공 여부 등)를 Electron에 전달해 사용자에게 안내한다.
+
+---
+
+## 2. 상세 아키텍처 및 구현 절차
+
+### 2.1 Electron 프론트엔드 설계
+1. **메인 프로세스(Node.js)**
+	- Python 프로세스를 실행하거나, 이미 실행 중인 Python 서버에 접속할 수 있는 설정을 마련한다.
+	- 예를 들어 `child_process` 모듈을 사용해 Python 백엔드를 띄우거나, 혹은 외부 서버 주소를 입력할 수도 있다.
+
+2. **렌더러(UI)**
+	- HTML/CSS/JS(또는 React/Vue 등 프레임워크)로 화면 구성
+		- 차량번호 입력 필드
+		- 주차시간을 30분씩 증감 조절할 수 있는 UI(‘+/- 30분’ 또는 체크박스 형태)
+		- 최대 1시간 30분까지 제한
+		- ‘확인’ 버튼
+	- 차량 조회 결과 화면
+		- 사진 뷰어
+		- ‘확인’, ‘다음’ 버튼
+	- 각 버튼 클릭 시, Electron -> Python 서버로 REST API 요청 (예: `POST /submit`, `POST /confirm`, `POST /next` 등)
+
+3. **통신 방식**
+	- RESTful API (Flask/FastAPI)를 기본으로 사용:
+		- 예: `POST /check-car` -> 차량번호+주차시간 전송 -> Python이 조회 후 사진 URL 반환
+		- 예: `POST /confirm-car` -> Python이 주차시간 버튼 자동 클릭 -> 처리 결과 반환
+	- 또는 Electron IPC(인터프로세스 통신) 방식으로 직접 Python 스크립트를 제어할 수도 있으나, 유지보수 편의를 위해 REST 구조가 직관적일 수 있다.
+
+### 2.2 Python 백엔드(자동화) 구현
+
+1. **프로젝트 구조**
+	```
+	my_project/
+	|-- main.py            # Flask/FastAPI 진입점
+	|-- requirements.txt   # Python 라이브러리 목록 (Selenium, Flask 등)
+	|-- db/
+	|   `-- database.db    # SQLite DB
+	|-- services/
+	|   |-- automation.py  # Selenium 관련 로직
+	|   `-- db_service.py  # DB 연동 로직
+	|-- ...
+	```
+
+2. **핵심 라이브러리**
+	- `selenium` (브라우저 자동화)
+	- `requests` (필요 시 웹 요청)
+	- `sqlite3` (Python 내장 SQLite)
+	- `Flask` 또는 `FastAPI` (백엔드 서버)
+
+3. **Selenium 환경 설정**
+	- 크롬드라이버 설치(맥, 윈도우 공통)
+	- Python에서 크롬드라이버 경로를 자동으로 맞춰주려면 `webdriver_manager.chrome` 등의 도구 사용 가능
+	- Selenium 실행 시 옵션:
+		- 헤드리스(백그라운드) 모드 가능
+		- 브라우저 창을 띄우려면 일반 모드로 실행
+
+4. **로그인 시나리오**
+	1. 세션(쿠키)이 DB나 로컬 파일에 저장되어 있는지 확인
+	2. 세션이 없거나 유효하지 않으면 로그인 페이지 접속
+	3. ID/PW 입력 -> 로그인 버튼 클릭
+	4. 로그인 성공 후 쿠키 정보를 획득해 DB에 저장 (혹은 Selenium 드라이버 내 세션을 그대로 유지)
+	5. 로그인 상태가 만료되기 전까지 동일 드라이버 세션 재사용
+
+5. **차량 조회 시나리오**
+	1. 조회 페이지 접속
+	2. 차량번호 4자리 입력 -> ‘조회’ 클릭
+	3. 페이지 로딩 후, 해당 차량 목록/사진의 DOM 요소 파싱
+	4. 첫 번째 검색 결과의 사진 URL 획득
+	5. 사진 URL을 Flask/FastAPI로 반환 -> Electron으로 전송
+
+6. **‘확인’ 또는 ‘다음’ 버튼 클릭 시나리오**
+	- ‘확인’: Python에서 현재 사진의 차량을 특정 사이트에서 선택 -> 주차시간 버튼 클릭
+		- 1시간인지 30분인지는 사용자가 입력한 주차시간을 기준으로 버튼 여러 번 누르거나(예: 1시간 30분이면 1시간 버튼 + 30분 버튼), 또는 1시간+30분 단위가 따로 있으면 해당 로직에 맞춰 클릭
+	- ‘다음’: 다음 검색 결과(사진)로 넘어가서 URL 다시 반환
+		- 특정 사이트가 다중 차량을 띄우는 구조라면, 검색 결과 목록의 인덱스를 +1 해서 재확인
+
+7. **DB 연동**
+	- `requests` 테이블 예시 스키마
+		```sql
+		CREATE TABLE IF NOT EXISTS requests (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			car_number TEXT,
+			parking_time INTEGER,         -- 분 단위 저장 (30, 60, 90 등)
+			request_time DATETIME,
+			status TEXT,                  -- 'pending', 'success', 'failure'
+			result_message TEXT           -- 에러 발생 시 메시지 등
+		);
+		```
+	- 로그인 쿠키 저장(optional)
+		```sql
+		CREATE TABLE IF NOT EXISTS session (
+			id INTEGER PRIMARY KEY,
+			cookie TEXT,
+			last_login DATETIME
+		);
+		```
+	- 로직에서 `db_service.py` 파일을 만들어, INSERT/UPDATE/SELECT 등을 수행하는 함수를 만들어 두면 유지보수가 편리하다.
+
+8. **에러 처리**
+	- 로그인 실패: ID/PW 오류 메시지가 뜨면 다시 시도하거나 사용자에게 재로그인 요구
+	- 차량 조회 실패:
+		- 검색 결과가 없는 경우: ‘해당 번호 차량 없음’ 메시지
+		- 사진 로드 실패 시 예외 처리
+	- 주차시간 버튼 클릭 중 DOM 요소 미발견 시, 자동화 재시도(1~2회) 후 실패 처리
+
+---
+
+## 3. 구현 단계별 상세 가이드
+
+### 3.1 초기 셋업
+1. **프로젝트 디렉터리 생성**  
+	- 예: `mkdir my_project && cd my_project`
+2. **가상환경 구성** (가급적 권장)
+	- `python3 -m venv venv` -> `source venv/bin/activate` (맥), `venv\Scripts\activate` (윈도우)
+3. **필수 라이브러리 설치**
+	- `pip install selenium flask sqlite3 webdriver_manager`
+4. **Electron 프로젝트 생성**
+	- `npm init`
+	- `npm install electron`
+
+### 3.2 Python 백엔드 구축
+1. **main.py** (Flask 예시)
+	```python
+	from flask import Flask, request, jsonify
+	from services.automation import handle_check_car, handle_confirm_car
+	app = Flask(__name__)
+
+	@app.route('/check-car', methods=['POST'])
+	def check_car():
+		data = request.get_json()
+		car_number = data['car_number']
+		parking_time = data['parking_time']
+		result = handle_check_car(car_number, parking_time)
+		return jsonify(result)
+
+	@app.route('/confirm-car', methods=['POST'])
+	def confirm_car():
+		data = request.get_json()
+		action = data['action']  # 'confirm' or 'next'
+		result = handle_confirm_car(action)
+		return jsonify(result)
+
+	if __name__ == '__main__':
+		app.run(port=5050)
+	```
+	- Electron에서는 `http://localhost:5050/check-car` 등으로 요청을 보낸다.
+
+2. **services/automation.py** (Selenium 로직 예시)
+	```python
+	from selenium import webdriver
+	from selenium.webdriver.common.by import By
+	import time
+
+	driver = None
+	logged_in = False
+
+	def init_driver():
+		global driver
+		if not driver:
+			from webdriver_manager.chrome import ChromeDriverManager
+			driver = webdriver.Chrome(ChromeDriverManager().install())
+			driver.implicitly_wait(5)
+
+	def login_if_needed():
+		global logged_in
+		if not logged_in:
+			# 사이트 접속 -> 로그인
+            my_id = "바디앤솔"
+            my_pw = "2728"
+			driver.get("http://kmp0000673.iptime.org/cooperators/home")
+			driver.find_element(By.ID, "user_id").send_keys(my_id)
+			driver.find_element(By.ID, "user_pw").send_keys(my_pw)
+			driver.find_element(By.ID, "login_btn").click()
+			time.sleep(2)  # 로그인 처리 대기
+			# 로그인 확인 로직
+			logged_in = True
+
+	def handle_check_car(car_number, parking_time):
+		init_driver()
+		login_if_needed()
+		# 차량 조회 페이지 이동
+		driver.get("http://kmp0000673.iptime.org/cooperators/home")
+		# 차량번호 입력
+		search_box = driver.find_element(By.ID, "search_input")
+		search_box.clear()
+		search_box.send_keys(car_number)
+		driver.find_element(By.ID, "search_btn").click()
+		time.sleep(2)
+		# 결과에서 첫 번째 차량 사진 URL 획득
+		image_elem = driver.find_element(By.CSS_SELECTOR, "img.car_photo")
+		image_url = image_elem.get_attribute('src')
+		# 주차시간 등은 DB에 임시 저장(별도 로직 구현)
+		return {"image_url": image_url, "status": "ok"}
+
+	def handle_confirm_car(action):
+		if action == "confirm":
+			# 특정 사이트 내 주차시간 버튼 클릭 로직
+			# 30분 버튼 / 1시간 버튼 선택 등을 parking_time 기준으로 처리
+			# ...
+			return {"status": "confirmed"}
+		elif action == "next":
+			# 다음 차량 사진으로 이동
+			# ...
+			return {"status": "next_car"}
+	```
+	- 위 예시는 개념적인 스니펫으로, 실제 환경에 맞춰 수정해야 한다.
+
+### 3.3 Electron 프론트엔드 구현
+1. **main.js** (Electron 메인 프로세스)
+	```js
+	const { app, BrowserWindow } = require('electron');
+	const { spawn } = require('child_process');
+	let pyProc = null;
+	function createWindow() {
+		const win = new BrowserWindow({ width: 800, height: 600 });
+		win.loadURL(`file://${__dirname}/index.html`);
+	}
+	app.whenReady().then(() => {
+		// Python 백엔드 실행
+		pyProc = spawn('python', ['main.py']);
+		createWindow();
+	});
+	app.on('window-all-closed', () => {
+		if (pyProc) pyProc.kill();
+		app.quit();
+	});
+	```
+2. **index.html** + **renderer.js**
+	- `index.html`에 간단한 폼(차량번호, 주차시간 입력, 사진 표시, 확인/다음 버튼)
+	- `renderer.js`에서 `fetch("http://localhost:5050/check-car", {method: 'POST', ...})` 형태로 Python 백엔드 호출
+
+### 3.4 배포 및 실행
+1. **맥에서 개발**
+	- 위 구조대로 개발 및 테스트 진행
+	- Selenium 동작, Electron 구동 등을 모두 테스트
+2. **윈도우 배포**
+	- Python 백엔드를 exe로 만들 경우 `pyinstaller main.py` (추가 설정 필요)
+	- Electron 앱은 `electron-builder` 등을 활용해 윈도우용 설치 파일 생성
+	- 두 실행 파일을 하나의 인스톨러로 묶거나, 혹은 설치 후 경로를 연결해 실행
+
+---
+
+## 4. 성능 및 보안 고려 사항
+- **세션 유지**: 쿠키 기반 로그인 세션을 오랫동안 유지하면 보안 위험이 있을 수 있으므로, 만료 시 재로그인 로직을 주기적으로 체크
+- **로그 관리**: SQLite 파일 크기가 과도해지지 않도록 주기적 백업 및 정리
+- **동시 접속**: 여러 사용자가 동시에 작업하면 Selenium 인스턴스를 사용자별로 분리해야 함(멀티프로세스/멀티쓰레드)
+- **에러/예외 처리**: 특정 사이트 구조가 바뀔 경우 자동화 스크립트가 깨질 수 있으므로 예외 처리와 모니터링 필요
+
+---
+
+## 5. 결론
+- **Python + Selenium**은 브라우저 자동화를 구현하기 쉬운 조합이며, SQLite를 통해 로컬 데이터를 간단하게 관리할 수 있다.
+- **Electron**을 프론트엔드로 사용하면, 사용자 입장에서 별도의 브라우저 없이 데스크톱 애플리케이션 형태로 이용이 가능하다.
+- 이러한 아키텍처를 통해 맥에서 개발하고, 윈도우 환경으로 배포해 실제 운영이 가능하다.
+- 프로젝트 진행 시, 로그인/조회/주차시간 등록 과정을 꼼꼼히 테스트하고 예외 상황을 처리하는 것이 중요하다.
